@@ -2,31 +2,42 @@ print("== Basic Tests ==");
 print("1+1="+1+1);
 print("text "+"text");
 print(2+2);
-
+print(2-2);
+print(2*2);
+print(2/2);
+print(2>2);
+print(2==2);
+print(2<2);
 print("== Function Tests ==");
 fn triple(x){
 	x*3;
 }
+fn msum(x,y){
+	let z = x+x;
+	y*z;
+}
+fn zeroparam(){
+	print("look ma! No parameters");
+}
+zeroparam();
 let y = triple(3);
 print(y);
+let w = msum(2,3);
+print(w);
 
 print("== If Tests ==");
 if 3<5 {
 	print("3 is less than 5");
 }
-
 if 5>3 {
 	print("5 is greater than 3");
 }
-
 if 4>=4{
 	print("4 is ge 4");
 }
-
 if 4<=4{
 	print("4 is le 4");
 }
-
 if 4==4{
 	print("4 is eq to 4");
 }
@@ -43,7 +54,6 @@ if false{
 } else if true {
 	print("chained if works");
 }
-
 if "hi"=="hi" {
 	print("text equality works");
 }

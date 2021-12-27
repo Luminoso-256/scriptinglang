@@ -33,6 +33,10 @@ enum Token {
     KwFalse,
     #[token("none")]
     KwNone,
+    #[token("in")]
+    KwIn,
+    #[token("to")]
+    KwTo,
     #[token(";")]
     KwTerminator,
     #[token("(")]
@@ -340,8 +344,8 @@ fn parse(
             let mut function_pstate = ParserState {
                 registeredVarNames: local_var_ids,
                 registeredFnNames: pstate.registeredFnNames.clone(),
-                encounteredRParen: false,
                 encounteredLBrace: false,
+                encounteredRParen: false,
             };
             loop {
                 let tok_o = lex.next();
@@ -821,8 +825,10 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
                     println!("{}", num);
                 } else if let ASTNode::Text(text) = val {
                     println!("{}", text);
-                }
-                //should either be a number or a string. those are the only 2 cases we'll handle.
+                } else if let ASTNode::Boolean(b) = val {
+                    println!("{}", b);
+                } 
+                //should either be a number or a string or a bool. those are the only 3 cases we'll handle.
             } else if idstr == "return" {
                 return exec(params[0].clone(), executionContext);
             }
@@ -960,7 +966,7 @@ fn main() {
     };
 
     for tree in trees {
-     //    println!("Executing tree {:?}", &tree);
+     //   println!("Executing tree {:?}", &tree);
         let res = exec(tree, &mut execcontext);
         //println!("Execution Context: {:?}", &execcontext)
     }
