@@ -1,5 +1,5 @@
-let a = 1;
-let b = 1;
-let c = "1 plus 1 equals..";
-let d = a+b;
-print(c+d);
+fn hi(target){
+	print("hello "+target);
+}
+
+hi("functi is an unholy sin");
