@@ -20,6 +20,12 @@ enum Token {
     KwLet,
     #[token("fn")]
     KwFn,
+    #[token("if")]
+    KwIf,
+    #[token("else")]
+    KwElse,
+    #[token("loop")]
+    KwLoop,
     #[token(";")]
     KwTerminator,
     #[token("(")]
@@ -88,7 +94,7 @@ enum ASTNode {
     //functions
     FunctionCall(Box<ASTNode>, Vec<ASTNode>),
     //id | paramlist | body
-    FunctionDecl(Box<ASTNode>,Vec<ASTNode>,Vec<ASTNode>)
+    FunctionDecl(Box<ASTNode>, Vec<ASTNode>, Vec<ASTNode>),
 }
 
 #[derive(Debug)]
@@ -121,7 +127,8 @@ fn parse(
         Token::Number => {
             let ntok = lex.next().unwrap();
             let nstr = lex.slice().to_string();
-            if ntok == Token::KwTerminator || ntok == Token::Error {
+            if ntok == Token::KwTerminator || ntok == Token::Error || ntok == Token::KwRParen  {
+                 pstate.encounteredRParen = true;
                 return ASTNode::Number(sstr.parse::<f32>().unwrap());
             } else {
                 let atok = lex.next().unwrap();
@@ -158,7 +165,8 @@ fn parse(
         }
         Token::DecimalNumber => {
             let ntok = lex.next().unwrap();
-            if ntok == Token::KwTerminator || ntok == Token::Error {
+            if ntok == Token::KwTerminator || ntok == Token::Error || ntok == Token::KwRParen {
+                 pstate.encounteredRParen = true;
                 return ASTNode::Number(sstr.parse::<f32>().unwrap());
             } else {
                 let atok = lex.next().unwrap();
@@ -198,7 +206,8 @@ fn parse(
             //TODO: trim prefix/suffix w/ a slice instead of replace.
             let ntok = lex.next().unwrap();
             let _nstr = lex.slice().to_string();
-            if ntok == Token::KwTerminator || ntok == Token::Error {
+            if ntok == Token::KwTerminator || ntok == Token::Error || ntok == Token::KwRParen {
+                 pstate.encounteredRParen = true;
                 return ASTNode::Text(sstr.replace("\"", ""));
             } else {
                 let atok = lex.next().unwrap();
@@ -207,16 +216,28 @@ fn parse(
 
                 match ntok {
                     Token::OpAdd => {
-                        return ASTNode::Add(Box::new(ASTNode::Text(sstr.replace("\"", ""))), Box::new(assign))
+                        return ASTNode::Add(
+                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
+                            Box::new(assign),
+                        )
                     }
                     Token::OpSub => {
-                        return ASTNode::Sub(Box::new(ASTNode::Text(sstr.replace("\"", ""))), Box::new(assign))
+                        return ASTNode::Sub(
+                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
+                            Box::new(assign),
+                        )
                     }
                     Token::OpMul => {
-                        return ASTNode::Mul(Box::new(ASTNode::Text(sstr.replace("\"", ""))), Box::new(assign))
+                        return ASTNode::Mul(
+                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
+                            Box::new(assign),
+                        )
                     }
                     Token::OpDiv => {
-                        return ASTNode::Div(Box::new(ASTNode::Text(sstr.replace("\"", ""))), Box::new(assign))
+                        return ASTNode::Div(
+                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
+                            Box::new(assign),
+                        )
                     }
                     _ => ASTNode::Text(sstr.replace("\"", "")),
                 }
@@ -232,7 +253,7 @@ fn parse(
             lex.next();
             //now we loop to get the local variables of the function.
             let mut local_vars: Vec<ASTNode> = vec![];
-            let mut local_var_ids:Vec<String> = vec![];
+            let mut local_var_ids: Vec<String> = vec![];
             loop {
                 let nxtok = lex.next().unwrap();
                 if nxtok == Token::KwRParen {
@@ -247,8 +268,8 @@ fn parse(
             }
             //skip the next token, it's the LBrace. the rest of this is actual body code, we'll read this till the RBrace.
             lex.next();
-            let mut function_ast:Vec<ASTNode> = vec![];
-            let mut function_pstate = ParserState{
+            let mut function_ast: Vec<ASTNode> = vec![];
+            let mut function_pstate = ParserState {
                 registeredVarNames: local_var_ids,
                 registeredFnNames: pstate.registeredFnNames.clone(),
                 encounteredRParen: false,
@@ -268,7 +289,11 @@ fn parse(
                 }
             }
             //println!("fn {} has params {:?} and body {:?}",func_id,local_vars,function_ast);
-            return ASTNode::FunctionDecl(Box::new(ASTNode::Text(func_id)),local_vars,function_ast);
+            return ASTNode::FunctionDecl(
+                Box::new(ASTNode::Text(func_id)),
+                local_vars,
+                function_ast,
+            );
         }
         Token::Identifier => {
             let ntok = lex.next().unwrap();
@@ -301,7 +326,7 @@ fn parse(
                             //gib token pls
                             params.push(parse(lex, nxtok, nxstr, pstate));
                         }
-                        println!("Pulled func invoke of {} Params: {:?}",sstr,params);
+                        println!("Pulled func invoke of {} Params: {:?}", sstr, params);
                         return ASTNode::FunctionCall(Box::new(ASTNode::Text(sstr)), params);
                     } else {
                         //what on earth are you doing?
@@ -352,7 +377,7 @@ fn parse(
 struct ExecutionContext {
     nVars: HashMap<String, f32>,
     sVars: HashMap<String, String>,
-    functions: HashMap<String,ASTNode>
+    functions: HashMap<String, ASTNode>,
 }
 
 fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
@@ -407,13 +432,58 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
                 return ASTNode::Text(format!("{}{}", first_str, second_str));
             }
         }
-        ASTNode::FunctionDecl(id,params,body) => {
-            let mut idstr:String = "".to_string();
+        ASTNode::Sub(p1, p2) => {
+            //actually get ourselves some values
+            let v1 = exec(*p1, executionContext);
+            let v2 = exec(*p2, executionContext);
+            let mut first_num = 0f32;
+            if let ASTNode::Number(n) = v1 {
+                first_num = n;
+            } 
+            let mut second_num = 0f32;
+            if let ASTNode::Number(n) = v2 {
+                second_num = n;
+            } 
+            return ASTNode::Number(first_num - second_num);
+        }
+        ASTNode::Mul(p1, p2) => {
+            //actually get ourselves some values
+            let v1 = exec(*p1, executionContext);
+            let v2 = exec(*p2, executionContext);
+            let mut first_num = 0f32;
+            if let ASTNode::Number(n) = v1 {
+                first_num = n;
+            } 
+            let mut second_num = 0f32;
+            if let ASTNode::Number(n) = v2 {
+                second_num = n;
+            } 
+            return ASTNode::Number(first_num * second_num);
+        }
+        ASTNode::Div(p1, p2) => {
+            //actually get ourselves some values
+            let v1 = exec(*p1, executionContext);
+            let v2 = exec(*p2, executionContext);
+            let mut first_num = 0f32;
+            if let ASTNode::Number(n) = v1 {
+                first_num = n;
+            } 
+            let mut second_num = 0f32;
+            if let ASTNode::Number(n) = v2 {
+                second_num = n;
+            } 
+            return ASTNode::Number(first_num / second_num);
+        }
+        ASTNode::FunctionDecl(id, params, body) => {
+            let mut idstr: String = "".to_string();
             //grab the id
-            if let ASTNode::Text(idtxt) = *id{
+            if let ASTNode::Text(idtxt) = *id {
                 idstr = idtxt;
             }
-            executionContext.functions.insert(idstr,ASTNode::FunctionDecl(Box::new(ASTNode::None),params.clone(),body.clone()));
+            executionContext.functions.insert(
+                idstr,
+                ASTNode::FunctionDecl(Box::new(ASTNode::None), params.clone(), body.clone()),
+            );
             //TODO: make this return a variable pointing to the function
             ASTNode::None
         }
@@ -434,43 +504,41 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
                     println!("{}", text);
                 }
                 //should either be a number or a string. those are the only 2 cases we'll handle.
-            } else if idstr == "return"{
-                 return exec(params[0].clone(), executionContext);
+            } else if idstr == "return" {
+                return exec(params[0].clone(), executionContext);
             }
             //otherwise, perform a function table lookup
             else {
                 let functionData = executionContext.functions[&idstr].clone();
-                if let ASTNode::FunctionDecl(_,fparam,ftrees) = functionData{
-                    let mut f_execcontext = ExecutionContext{
+                if let ASTNode::FunctionDecl(_, fparam, ftrees) = functionData {
+                    let mut f_execcontext = ExecutionContext {
                         nVars: HashMap::new(),
                         sVars: HashMap::new(),
                         functions: executionContext.functions.clone(),
                     };
                     //populate the variables (annoyance moment)
-                    for i in 0..fparam.len(){
+                    for i in 0..fparam.len() {
                         //get the id of the variable
                         let mut vid = "".to_string();
-                        if let ASTNode::Variable(idstr) = &fparam[i]{
+                        if let ASTNode::Variable(idstr) = &fparam[i] {
                             vid = idstr.clone();
-
                         }
                         //this is our way of getting around type specification. Pull it from the node type of the parameter
-                       if let ASTNode::Number(num) = params[i]{
+                        if let ASTNode::Number(num) = params[i] {
                             f_execcontext.nVars.insert(vid, num);
-
-                       } else  if let ASTNode::Text(string) = &params[i] {
+                        } else if let ASTNode::Text(string) = &params[i] {
                             f_execcontext.sVars.insert(vid, string.clone());
-                       }
+                        }
                     }
-                    println!("function execution context: {:?}",f_execcontext);
+                    println!("function execution context: {:?}", f_execcontext);
                     //next, run the function execution - we return the result of the last function call (a rather rust-like convention honestly)
                     let mut ret_val = ASTNode::None;
-                    for tree in ftrees{
-                        ret_val = exec(tree,&mut f_execcontext);
+                    for tree in ftrees {
+                        ret_val = exec(tree, &mut f_execcontext);
                     }
+                    println!("returning: {:?}",ret_val);
                     return ret_val;
                 }
-               
             }
 
             ASTNode::None
@@ -492,8 +560,9 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
 fn main() {
     /* Get Our File */
     //TODO: replace w/ pulling from args
-    let file_contents =
+    let mut file_contents =
         fs::read_to_string("C:/workspace/programming/rust/scriptinglang/test.sk").unwrap();
+    file_contents = file_contents.replace("\r", "");
     /* Lex / Parse */
     //basically convert our code to something executable.
 
@@ -504,11 +573,11 @@ fn main() {
 
     let mut pstate = ParserState {
         registeredVarNames: vec![],
-        registeredFnNames: vec!["print".to_string()],
+        registeredFnNames: vec!["print".to_string(),"return".to_string()],
         encounteredRParen: false,
     };
     loop {
-        println!("Parsing Context: {:?}",pstate);
+        println!("Parsing Context: {:?}", pstate);
         let tok_o = lex.next();
         if tok_o != None {
             let tok = tok_o.unwrap();
@@ -525,8 +594,6 @@ fn main() {
     //== Execute
     // we iterate down through each line of the tree, and execute.
     // we keep a hashmap of vars.
-    // TODO: Think about what function execution semantics are going to look like. Do we pull them aside at parsetime? Insert them into the AST?
-    // the latter seems more elegant
 
     let mut execcontext = ExecutionContext {
         nVars: HashMap::new(),

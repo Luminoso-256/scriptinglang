@@ -1,5 +1,7 @@
-fn hi(target){
-	print("hello "+target);
+fn triple(x){
+	x+x+x;
 }
 
-hi("functi is an unholy sin");
+let y = triple(3);
+print(y);
+print(3*5);
