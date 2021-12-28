@@ -19,7 +19,7 @@ fn msum(x,y){
 fn zeroparam(){
 	print("look ma! No parameters");
 }
-zeroparam();
+
 let y = triple(3);
 print(y);
 let w = msum(2,3);
