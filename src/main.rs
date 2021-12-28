@@ -531,10 +531,12 @@ fn parse(
             let ntok = nptok.token.to_owned();
             let nstr = nptok.text.to_owned();
             let condition = parse(lex, ntok, nstr, Token::KwIf, "if".to_string(), pstate);
-                println!(
-                        "\x1b[32m[IfStatement - Conditional] Got Conditional: {:?} \x1b[0m",
-                      condition
-                    );
+            if pstate.debug{
+            println!(
+                "\x1b[32m[IfStatement - Conditional] Got Conditional: {:?} \x1b[0m",
+                condition
+            );
+        }
             //jump the LBrace (just like KwFn)
             //lex.next();
             //from here -> RBrace is the main ifbody
@@ -552,10 +554,14 @@ fn parse(
                 }
                 //if we encounter a RParen, or our parser state claims we have,we're done.
                 if current_token == Token::KwRBrace {
-                    println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                    if pstate.debug{
+                        println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                    }
                     break;
                 } else if pstate.encounteredRBrace {
-                    println!("\x1b[31mKwRBrace flag -> break;\x1b[0m");
+                    if pstate.debug{
+                        println!("\x1b[31mKwRBrace Flag -> break;\x1b[0m");
+                    }
                     pstate.encounteredRParen = false;
                     break;
                 }
@@ -570,7 +576,10 @@ fn parse(
                     pstate,
                 );
                 if pstate.debug {
-                    println!("\x1b[36m[IfStatement - If Block] Got Result: {:?}\x1b[0m", tree);
+                    println!(
+                        "\x1b[36m[IfStatement - If Block] Got Result: {:?}\x1b[0m",
+                        tree
+                    );
                 }
                 //make sure the only Nones we throw in are the ones we're explicitly supposed to!
                 if tree == ASTNode::None {
@@ -611,10 +620,14 @@ fn parse(
                         }
                         //if we encounter a RParen, or our parser state claims we have,we're done.
                         if current_token == Token::KwRBrace {
-                            println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                            if pstate.debug{
+                        println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                    }
                             break;
                         } else if pstate.encounteredRBrace {
+                            if pstate.debug {
                             println!("\x1b[31mKwRBrace flag -> break;\x1b[0m");
+                        }
                             pstate.encounteredRParen = false;
                             break;
                         }
@@ -629,7 +642,10 @@ fn parse(
                             pstate,
                         );
                         if pstate.debug {
-                            println!("\x1b[36m[IfStatement - Else Block] Got Result: {:?}\x1b[0m", tree);
+                            println!(
+                                "\x1b[36m[IfStatement - Else Block] Got Result: {:?}\x1b[0m",
+                                tree
+                            );
                         }
                         //make sure the only Nones we throw in are the ones we're explicitly supposed to!
                         if tree == ASTNode::None {
@@ -657,6 +673,160 @@ fn parse(
             }
 
             ASTNode::IfStatement(Box::new(condition), if_ast, has_else, else_ast)
+        }
+
+        //loops!
+        Token::KwLoop => {
+            //what type of loop are you?
+            let nptok = lex.next().unwrap();
+            let ntok = nptok.token.to_owned();
+            if ntok == Token::KwWhile {
+                // a conditional loop
+
+                //lets get ourselves the condition
+                let nptok = lex.next().unwrap();
+                let ntok = nptok.token.to_owned();
+                let nstr = nptok.text.to_owned();
+                let condition = parse(lex, ntok, nstr, Token::KwIf, "if".to_string(), pstate);
+                if pstate.debug{
+                println!(
+                    "\x1b[32m[Loop (Conditional Variety)] Got Conditional: {:?} \x1b[0m",
+                    condition
+                );
+            }
+
+                //then, get the body of the loop. this is routine by now (KwIf and KwFn)
+                let mut loop_ast: Vec<ASTNode> = vec![];
+                loop {
+                    let current_tokp = lex.next().unwrap();
+                    let current_token = current_tokp.token.to_owned();
+                    let current_str = current_tokp.text.to_owned();
+                    if pstate.debug {
+                        println!(
+                        "\x1b[34m[Loop (Conditional Variety)] Parsing Potential Body: {:?} {}\x1b[0m",
+                        current_token, current_str
+                    );
+                    }
+                    //if we encounter a RParen, or our parser state claims we have,we're done.
+                    if current_token == Token::KwRBrace {
+                        if pstate.debug{
+                        println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                    }
+                        break;
+                    } else if pstate.encounteredRBrace {
+                        if pstate.debug {
+                            println!("\x1b[31mKwRBrace flag -> break;\x1b[0m");
+                        }
+                        pstate.encounteredRParen = false;
+                        break;
+                    }
+                    let isNone = current_token == Token::KwNone;
+                    //recursively parse this argument
+                    let tree = parse(
+                        lex,
+                        current_token,
+                        current_str.clone(),
+                        Token::KwLBrace,
+                        "{".to_string(),
+                        pstate,
+                    );
+                    if pstate.debug {
+                        println!(
+                            "\x1b[36m[Loop (Conditional Variety)] Got Result: {:?}\x1b[0m",
+                            tree
+                        );
+                    }
+                    //make sure the only Nones we throw in are the ones we're explicitly supposed to!
+                    if tree == ASTNode::None {
+                        if isNone {
+                            loop_ast.push(tree);
+                        }
+                    } else {
+                        loop_ast.push(tree);
+                    }
+                }
+                //cleanup
+                pstate.encounteredRParen = false;
+                pstate.encounteredRBrace = false;
+                //and we're done maybe probably hopefully
+                return ASTNode::ConditionalLoop(Box::new(condition), loop_ast);
+            } else if ntok == Token::Identifier {
+                // a incrementing loop
+
+                //get the name of the iterator var, and the upper/lower bounds.
+                let iter_id = nptok.text.to_owned();
+                //skip KwIn
+                lex.next();
+                //get lowerbound
+                let nptok = lex.next().unwrap();
+                let ntok = nptok.token.to_owned();
+                let nstr = nptok.text.to_owned();
+                let lower_bound = parse(lex, ntok, nstr, Token::KwIn, "in".to_string(), pstate);
+                //skip KwTo
+                lex.next();
+                //get upper bound
+                let nptok = lex.next().unwrap();
+                let ntok = nptok.token.to_owned();
+                let nstr = nptok.text.to_owned();
+                let upper_bound = parse(lex, ntok, nstr, Token::KwTo, "to".to_string(), pstate);
+                //great! Now lets grab the body.
+                //skip the braces - we don't need em
+                lex.next();
+                let mut loop_ast: Vec<ASTNode> = vec![];
+                loop {
+                    let current_tokp = lex.next().unwrap();
+                    let current_token = current_tokp.token.to_owned();
+                    let current_str = current_tokp.text.to_owned();
+                    if pstate.debug {
+                        println!(
+                        "\x1b[34m[Loop (Incrementing Variety)] Parsing Potential Body: {:?} {}\x1b[0m",
+                        current_token, current_str
+                    );
+                    }
+                    //if we encounter a RParen, or our parser state claims we have,we're done.
+                    if current_token == Token::KwRBrace {
+                        if pstate.debug{
+                        println!("\x1b[31mKwRBrace -> break;\x1b[0m");
+                    }
+                        break;
+                    } else if pstate.encounteredRBrace {
+                         if pstate.debug{
+                        println!("\x1b[31mKwRBrace flag -> break;\x1b[0m");
+                    }
+                        pstate.encounteredRParen = false;
+                        break;
+                    }
+                    let isNone = current_token == Token::KwNone;
+                    //recursively parse this argument
+                    let tree = parse(
+                        lex,
+                        current_token,
+                        current_str.clone(),
+                        Token::KwLBrace,
+                        "{".to_string(),
+                        pstate,
+                    );
+                    if pstate.debug {
+                        println!(
+                            "\x1b[36m[Loop (Incrementing Variety)] Got Result: {:?}\x1b[0m",
+                            tree
+                        );
+                    }
+                    //make sure the only Nones we throw in are the ones we're explicitly supposed to!
+                    if tree == ASTNode::None {
+                        if isNone {
+                            loop_ast.push(tree);
+                        }
+                    } else {
+                        loop_ast.push(tree);
+                    }
+                }
+                //cleanup
+                pstate.encounteredRParen = false;
+                pstate.encounteredRBrace = false;
+                return ASTNode::IncrementingLoop(Box::new(ASTNode::Variable(iter_id.clone())),Box::new(lower_bound),Box::new(upper_bound),loop_ast);
+            }
+            ASTNode::None
         }
         _ => ASTNode::None,
     }
@@ -1223,12 +1393,31 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
     }
 }
 
-const USE_ARGS: bool = false;
+fn preprocess(file:String) -> String{
+    let mut processed_file = "".to_string();
+    //ew windows
+    let cleaned = file.replace("\r", "");
+
+    //the heart of this is pretty simple. we go through line by line, check if theres something we should care abot
+    // if there is, we do stuff. otherwise we dont.
+    let lines = cleaned.split("\n");
+    for line in lines{
+        let should_include_line = !line.starts_with("#");
+        if should_include_line{
+            //we conviently leave the /n out.
+            processed_file += line;
+        }
+    }
+    return processed_file;
+}
+
+const USE_ARGS: bool = true;
 
 fn main() {
+    println!("\x1b[97mSKCore | A (modified) sack interpreter in Rust. | (C) Luminoso 2021 (barely!) / All Rights Reserved\x1b[0m");
     /* Get Our File */
     let mut file_contents: String;
-    let mut debug: bool = true;
+    let mut debug: bool = false;
     if USE_ARGS {
         let args: Vec<String> = std::env::args().collect();
         println!("getting file from {}", args.get(1).unwrap());
@@ -1242,7 +1431,7 @@ fn main() {
         file_contents =
             fs::read_to_string("C:/workspace/programming/rust/scriptinglang/test.sk").unwrap();
     }
-    file_contents = file_contents.replace("\r", "");
+    file_contents = preprocess(file_contents);
     /* Lex / Parse */
     //basically convert our code to something executable.
 

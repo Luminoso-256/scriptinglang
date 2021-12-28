@@ -1,3 +1,7 @@
+#excuse me, i just had to comment
+# with these lovely comments that shall comment
+# on how you treat your comments.
+
 print("== Basic Tests ==");
 print("1+1="+1+1);
 print("text "+"text");
