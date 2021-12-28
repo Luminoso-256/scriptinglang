@@ -1,15 +1,378 @@
 #![allow(dead_code)]
 #![allow(unused_assignments)]
 #![allow(non_snake_case)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 /*
 A Tiny Scripting Language
 ---------
 (C) Luminoso 2021 / All Rights Reserved
 */
-use logos::{Lexer, Logos};
+use logos::Logos;
 use std::collections::HashMap;
+use std::fs;
 use std::iter::Peekable;
-use std::{fs, hash};
+use std::slice::SliceIndex;
+
+//a bit of fancyness to make a bit below look neat ig
+macro_rules! either {
+    ($test:expr => $true_expr:expr; $false_expr:expr) => {
+        if $test {
+            $true_expr
+        } else {
+            $false_expr
+        }
+    };
+}
+
+fn parse(
+    lex: &mut Peekable<std::slice::Iter<'_, ParsableToken>>,
+    //current token
+    stok: Token,
+    //current string
+    sstr: String,
+    //prior token
+    ptok: Token,
+    //prior string
+    pstr: String,
+    //state
+    pstate: &mut ParserState,
+) -> ASTNode {
+    if pstate.debug{
+        println!("[Parse] Parse called w/ stok: {:?} sstr: {} ptok: {:?} pstr: {} pstate: {:?}",stok,sstr,ptok,pstr,pstate);
+    }
+    match stok {
+        /* Language Atoms [Number/Text/Bool/Identifier] */
+        //numbers
+        Token::Number | Token::DecimalNumber => {
+            // decide if this number is "on it's own" or if it has an operator attached to it
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            match nx_tok {
+                //we're just returning the number on it's lonesome
+                Token::KwTerminator | Token::KwTo => {
+                    return ASTNode::Number(sstr.parse::<f32>().unwrap());
+                }
+                Token::KwLBrace => {
+                    pstate.encounteredLBrace = true;
+                    return ASTNode::Number(sstr.parse::<f32>().unwrap());
+                }
+                Token::KwRParen => {
+                    pstate.encounteredRParen = true;
+                    return ASTNode::Number(sstr.parse::<f32>().unwrap());
+                }
+                //operators
+                _ => {
+                    //running parse on an operator will yield an operator AST node that is appropriate setup, provided we set the last token field correctly.
+                    //actually forward so we're on the operator
+                    lex.next();
+                    //now do the call and return
+                    return parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+                }
+            }
+        }
+        //text - this is almost exactly like numbers so comments have been removed.
+        Token::Text => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            //clean the quotes off the ends
+            let retstr = sstr[1..sstr.len() - 1].to_string();
+            match nx_tok {
+                Token::KwTerminator | Token::KwTo => {
+                    return ASTNode::Text(retstr.clone());
+                }
+                Token::KwLBrace => {
+                    pstate.encounteredLBrace = true;
+                    return ASTNode::Text(retstr.clone());
+                }
+                Token::KwRParen => {
+                    pstate.encounteredRParen = true;
+                    return ASTNode::Text(retstr.clone());
+                }
+                _ => {
+                    lex.next();
+                    return parse(lex, nx_tok, nx_str, stok, retstr, pstate);
+                }
+            }
+        }
+        //booleans - ditto w/ above
+        Token::KwTrue | Token::KwFalse => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            match nx_tok {
+                Token::KwTerminator | Token::KwTo => {
+                    return either!(stok == Token::KwTrue => ASTNode::Boolean(true); ASTNode::Boolean(false));
+                }
+                Token::KwLBrace => {
+                    pstate.encounteredLBrace = true;
+                    return either!(stok == Token::KwTrue => ASTNode::Boolean(true); ASTNode::Boolean(false));
+                }
+                Token::KwRParen => {
+                    pstate.encounteredRParen = true;
+                    return either!(stok == Token::KwTrue => ASTNode::Boolean(true); ASTNode::Boolean(false));
+                }
+                _ => {
+                    lex.next();
+                    return parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+                }
+            }
+        }
+        //the dreaded one - Identifiers
+        Token::Identifier => {
+            //first, we need to decide if this is a function call, or a variable.
+            //to do this, we'll check against the registered function names.
+            if pstate.registeredFnNames.contains(&sstr) {
+                //it's a function invoke
+                //the next token will be a LParen ( - we don't need this, so we skip it
+                lex.next();
+                //now, we read out parameters until such time as we encounter an RParen, which signifies the end of the parameter list
+                //and that it's time to move on.
+                let mut params: Vec<ASTNode> = vec![];
+                loop{
+                    let current_tokp = lex.next().unwrap();
+                    let current_token = current_tokp.token.to_owned();
+                    let current_str = current_tokp.text.to_owned();
+                    if pstate.debug{
+                        println!("[Fn Call] Checking Potential Argument: {:?} {}",current_token,current_str);
+                    }
+                    //if we encounter a RParen, or our parser state claims we have,we're done.
+                    if current_token == Token::KwRParen{
+                        if pstate.debug{
+                            println!("KwRParen -> break;");
+                        }
+                        break;
+                    } else if pstate.encounteredRParen{
+                        if pstate.debug{
+                            println!("encountered KwRParen previously. -> break;");
+                        }
+                        pstate.encounteredRParen = false;
+                        break;
+                    }
+                    //recursively parse this argument
+                    if pstate.debug{
+                        println!("[Fn Call] Parsing Argument: {:?} {}",current_token,current_str);
+                    }
+                    let param = parse(lex,current_token,current_str,Token::KwLParen,"(".to_string(),pstate);
+                    if pstate.debug{
+                        println!("[Fn Call] Got Result: {:?}",param);
+                    }
+                    params.push(param);
+                }
+                //finally, put it all together (and clean up a var that might've been left set)
+                pstate.encounteredRParen = false;
+                return ASTNode::FunctionCall(Box::new(ASTNode::Text(sstr.clone())),params);
+            } else {
+                //it's a variable
+                let nx_tokp = lex.peek().unwrap();
+                let nx_tok = nx_tokp.token.to_owned();
+                let nx_str = nx_tokp.text.to_owned();
+                match nx_tok {
+                    Token::KwTerminator | Token::KwTo => {
+                        return ASTNode::Variable(sstr.clone());
+                    }
+                    Token::KwLBrace => {
+                        pstate.encounteredLBrace = true;
+                        return ASTNode::Variable(sstr.clone());
+                    }
+                    Token::KwRParen => {
+                        pstate.encounteredRParen = true;
+                        return ASTNode::Variable(sstr.clone());
+                    }
+                    _ => {
+                        lex.next();
+                        return parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+                    }
+                }
+            }
+        }
+
+        /* Operators (All of them) */
+        Token::OpAdd => {
+            //pretty simple. We get the next part of the operator recursively
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            //based on the prior token type, lets figure out what the first parameter was.
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                Token::Text => ASTNode::Text(pstr.clone()),
+                Token::KwTrue => ASTNode::Boolean(true),
+                Token::KwFalse => ASTNode::Boolean(false),
+                _ => ASTNode::None,
+            };
+            return ASTNode::Add(Box::new(first_param), Box::new(sec_param));
+        }
+        //this one's also a bit special, so it's up top
+        Token::OpAssign => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            //the only valid thing to assign to is a var
+            let first_param = ASTNode::Variable(pstr.clone());
+            return ASTNode::Change(Box::new(first_param), Box::new(sec_param));
+        }
+        //the rest of these follow the same template, more or less.
+        //TODO: DRY - break getting the parameters off into it's own smaller function
+        Token::OpSub => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::Sub(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpMul => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::Mul(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpDiv => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::Div(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpModulo => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::Modulo(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpAddEq => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::AddEq(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpSubEq => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::SubEq(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpGtCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::GtCheck(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpLtCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::LtCheck(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpGteCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::GteCheck(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpLteCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                _ => ASTNode::None,
+            };
+            return ASTNode::LteCheck(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpEqCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                Token::Text => ASTNode::Text(pstr.clone()),
+                Token::KwTrue => ASTNode::Boolean(true),
+                Token::KwFalse => ASTNode::Boolean(false),
+                _ => ASTNode::None,
+            };
+            return ASTNode::EqCheck(Box::new(first_param), Box::new(sec_param));
+        }
+        Token::OpNeqCheck => {
+            let nx_tokp = lex.peek().unwrap();
+            let nx_tok = nx_tokp.token.to_owned();
+            let nx_str = nx_tokp.text.to_owned();
+            let sec_param = parse(lex, nx_tok, nx_str, stok, sstr, pstate);
+            let first_param = match ptok {
+                Token::Identifier => ASTNode::Variable(pstr.clone()),
+                Token::Number => ASTNode::Number(pstr.parse::<f32>().unwrap()),
+                Token::Text => ASTNode::Text(pstr.clone()),
+                Token::KwTrue => ASTNode::Boolean(true),
+                Token::KwFalse => ASTNode::Boolean(false),
+                _ => ASTNode::None,
+            };
+            return ASTNode::NeqCheck(Box::new(first_param), Box::new(sec_param));
+        }
+
+        _ => ASTNode::None,
+    }
+}
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 enum Token {
@@ -27,6 +390,10 @@ enum Token {
     KwElse,
     #[token("loop")]
     KwLoop,
+    #[token("break")]
+    KwBreak,
+    #[token("while")]
+    KwWhile,
     #[token("true")]
     KwTrue,
     #[token("false")]
@@ -81,8 +448,6 @@ enum Token {
     //good ol text & stuffs
     #[regex("[a-zA-Z]+")]
     Identifier,
-    #[token(".")]
-    Dot,
     #[regex("[0-9]+")]
     Number,
     //le big regexp
@@ -90,7 +455,7 @@ enum Token {
     DecimalNumber,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum ASTNode {
     //at the end of a "branch" of our tree.
     None,
@@ -102,9 +467,13 @@ enum ASTNode {
     Variable(String),
     //assignment - id and the expression to be assigned.
     Set(Box<ASTNode>, Box<ASTNode>),
+    //like set, but for vars that already exist
+    Change(Box<ASTNode>, Box<ASTNode>),
     //operations
     Add(Box<ASTNode>, Box<ASTNode>),
+    AddEq(Box<ASTNode>, Box<ASTNode>),
     Sub(Box<ASTNode>, Box<ASTNode>),
+    SubEq(Box<ASTNode>, Box<ASTNode>),
     Mul(Box<ASTNode>, Box<ASTNode>),
     Div(Box<ASTNode>, Box<ASTNode>),
     EqCheck(Box<ASTNode>, Box<ASTNode>),
@@ -113,464 +482,38 @@ enum ASTNode {
     LtCheck(Box<ASTNode>, Box<ASTNode>),
     GteCheck(Box<ASTNode>, Box<ASTNode>),
     LteCheck(Box<ASTNode>, Box<ASTNode>),
+    Modulo(Box<ASTNode>, Box<ASTNode>),
     //functions
     FunctionCall(Box<ASTNode>, Vec<ASTNode>),
     //id | paramlist | body
     FunctionDecl(Box<ASTNode>, Vec<ASTNode>, Vec<ASTNode>),
     //condition | if body | has an else clause? | else body
     IfStatement(Box<ASTNode>, Vec<ASTNode>, bool, Vec<ASTNode>),
+    //= Loop things
+    //iter var name, lower bound, upper bound, body
+    IncrementingLoop(Box<ASTNode>, Box<ASTNode>, Box<ASTNode>, Vec<ASTNode>),
+    //condition, body
+    ConditionalLoop(Box<ASTNode>, Vec<ASTNode>),
+    //escape!
+    LoopBreak,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ParserState {
     registeredVarNames: Vec<String>,
     registeredFnNames: Vec<String>,
     encounteredRParen: bool,
-    encounteredLBrace:bool,
+    encounteredLBrace: bool,
+    debug:bool
 }
 
-#[derive(PartialEq,Debug)]
+#[derive(PartialEq, Debug)]
 struct ParsableToken {
     token: Token,
     text: String,
 }
 
-fn parse(
-    lex: &mut Peekable<std::slice::Iter<'_, ParsableToken>>,
-    stok: Token,
-    sstr: String,
-    pstate: &mut ParserState,
-) -> ASTNode {
-   // println!("parse called -> {:?} {}",stok,sstr);
-    match stok {
-        Token::KwTrue => ASTNode::Boolean(true),
-        Token::KwFalse => ASTNode::Boolean(false),
-        Token::KwNone => ASTNode::None,
-        Token::KwLet => {
-            let tid = lex.next().unwrap();
-
-            let id = tid.text.to_owned();
-            //from now on, any string that says this will be taken to be a variable
-            pstate.registeredVarNames.push(id.clone());
-            //skip over the assignment token, we don't actually need it...
-            lex.next();
-            //recursive time!
-            let nptok = lex.next().unwrap();
-            let ntok = nptok.token.to_owned();
-            let nstr = nptok.text.to_owned();
-            let assignment = parse(lex, ntok, nstr, pstate);
-            return ASTNode::Set(Box::new(ASTNode::Variable(id)), Box::new(assignment));
-        }
-        Token::Number | Token::DecimalNumber => {
-            let nptok = lex.next().unwrap();
-            let ntok = nptok.token.to_owned();
-            let nstr = nptok.text.to_owned();
-            if ntok == Token::KwTerminator
-                || ntok == Token::Error
-                || ntok == Token::KwRParen
-                || ntok == Token::KwLBrace
-            {
-                 if ntok == Token::KwRParen{
-                    pstate.encounteredRParen = true;
-                } else if ntok == Token::KwLBrace{
-                    pstate.encounteredLBrace = true;
-                }
-                return ASTNode::Number(sstr.parse::<f32>().unwrap());
-            } else {
-                let aptok = lex.peek().unwrap();
-                let atok = aptok.token.to_owned();
-                let astr = aptok.text.to_owned();
-                let assign = parse(lex, atok, astr, pstate);
-                match ntok {
-                    Token::OpAdd => {
-                        lex.next();
-                        return ASTNode::Add(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpSub => {
-                        lex.next();
-                        return ASTNode::Sub(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpMul => {
-                        lex.next();
-                        return ASTNode::Mul(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpDiv => {
-                        lex.next();
-                        return ASTNode::Div(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpEqCheck => {
-                        lex.next();
-                        return ASTNode::EqCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpNeqCheck => {
-                        lex.next();
-                        return ASTNode::NeqCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpGtCheck => {
-                        return ASTNode::GtCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpLtCheck => {
-                        return ASTNode::LtCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpGteCheck => {
-                        return ASTNode::GteCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpLteCheck => {
-                        return ASTNode::LteCheck(
-                            Box::new(ASTNode::Number(sstr.parse::<f32>().unwrap())),
-                            Box::new(assign),
-                        )
-                    }
-                    _ => ASTNode::Number(sstr.parse::<f32>().unwrap()),
-                }
-            }
-        }
-        
-        //return ASTNode::Number(sstr.parse::<f32>().unwrap()),
-        Token::Text => {
-            //TODO: trim prefix/suffix w/ a slice instead of replace.
-            let nptok = lex.peek().unwrap();
-            let ntok = nptok.token.to_owned();
-
-            if ntok == Token::KwTerminator || ntok == Token::Error || ntok == Token::KwRParen || ntok == Token::KwLBrace {
-                if ntok == Token::KwRParen{
-                    pstate.encounteredRParen = true;
-                } else if ntok == Token::KwLBrace{
-                    pstate.encounteredLBrace = true;
-                }
-                return ASTNode::Text(sstr.replace("\"", ""));
-            } else {
-                lex.next();
-                let aptok = lex.next().unwrap();
-                let atok = aptok.token.to_owned();
-                let astr = aptok.text.to_owned();
-                let assign = parse(lex, atok, astr, pstate);
-
-                match ntok {
-                    Token::OpAdd => {
-                        return ASTNode::Add(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpSub => {
-                        return ASTNode::Sub(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpMul => {
-                        return ASTNode::Mul(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpDiv => {
-                        return ASTNode::Div(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpEqCheck => {
-                        return ASTNode::EqCheck(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    Token::OpNeqCheck => {
-                        return ASTNode::NeqCheck(
-                            Box::new(ASTNode::Text(sstr.replace("\"", ""))),
-                            Box::new(assign),
-                        )
-                    }
-                    _ => ASTNode::Text(sstr.replace("\"", "")),
-                }
-            }
-        }
-        Token::KwFn => {
-            // to start, lets grab the id
-            let nptok = lex.next().unwrap();
-            let func_id = nptok.text.to_owned();
-            pstate.registeredFnNames.push(func_id.clone());
-            //the next token should be an lparen, we skip it
-            //TODO: verify syntax!
-            lex.next();
-            //now we loop to get the local variables of the function.
-            let mut local_vars: Vec<ASTNode> = vec![];
-            let mut local_var_ids: Vec<String> = vec![];
-            loop {
-                let nxptok = lex.next().unwrap();
-                let nxtok = nxptok.token.to_owned();
-                if nxtok == Token::KwRParen {
-                    //end of param list
-                    break;
-                } else if nxtok == Token::Identifier {
-                    let nxstr = nxptok.text.to_owned();
-                    //it's a parameter name!
-                    local_var_ids.push(nxstr.clone());
-                    local_vars.push(ASTNode::Variable(nxstr.clone()));
-                }
-            }
-            //skip the next token, it's the LBrace. the rest of this is actual body code, we'll read this till the RBrace.
-            lex.next();
-            let mut function_ast: Vec<ASTNode> = vec![];
-            let mut function_pstate = ParserState {
-                registeredVarNames: local_var_ids,
-                registeredFnNames: pstate.registeredFnNames.clone(),
-                encounteredLBrace: false,
-                encounteredRParen: false,
-            };
-            loop {
-                let tok_o = lex.next();
-                if tok_o != None {
-                    let ptok = tok_o.unwrap();
-                    let tok = ptok.token.to_owned();
-                    // println!("{:?} {}",tok,ptok.text);
-                    let sstr = ptok.text.to_owned();
-                    if tok == Token::KwRBrace {
-                        break;
-                    }
-
-                    function_ast.push(parse(lex, tok, sstr, &mut function_pstate));
-                } else {
-                    break;
-                }
-            }
-            //println!("fn {} has params {:?} and body {:?}",func_id,local_vars,function_ast);
-            return ASTNode::FunctionDecl(
-                Box::new(ASTNode::Text(func_id)),
-                local_vars,
-                function_ast,
-            );
-        }
-        Token::Identifier => {
-            let nptok = lex.next().unwrap();
-            let ntok = nptok.token.to_owned();
-            if ntok == Token::KwTerminator || ntok == Token::Error || ntok == Token::KwRParen {
-                 if ntok == Token::KwRParen{
-                    pstate.encounteredRParen = true;
-                } else if ntok == Token::KwLBrace{
-                    pstate.encounteredLBrace = true;
-                }
-                return ASTNode::Variable(sstr);
-            } else {
-                //**are thou a function, or are thou not a function. That is the question eternal.**
-                if pstate.registeredFnNames.iter().any(|name| name == &sstr) {
-                    //it's a function name. It shall be treated as one!
-                    //if the next token is a LParen, we have ourselves a call
-                    if ntok == Token::KwLParen {
-                       // println!("Function");
-                        let mut params: Vec<ASTNode> = vec![];
-                        loop {
-                            let nxtok_o = lex.next();
-                            if nxtok_o == None {
-                                break;
-                            }
-                            if pstate.encounteredRParen {
-                                pstate.encounteredRParen = false;
-                                break;
-                            }
-                            let nxptok = nxtok_o.unwrap();
-                          //  print!("nxptok: {:?}",nxptok );
-                            let nxtok = nxptok.token.to_owned();
-                            let nxstr = nxptok.text.to_owned();
-                          //   println!("{:?} {}", nxtok, nxstr);
-                            if nxtok == Token::KwRParen {
-                                break;
-                            }
-
-                            //gib token pls
-                            params.push(parse(lex, nxtok, nxstr, pstate));
-                        }
-                      //  println!("Pulled func invoke of {} Params: {:?}", sstr, params);
-                        return ASTNode::FunctionCall(Box::new(ASTNode::Text(sstr)), params);
-                    } else {
-                        //what on earth are you doing?
-                        return ASTNode::None;
-                    }
-                } else {
-                    let aptok = lex.next().unwrap();
-                    let atok = aptok.token.to_owned();
-                    let astr = aptok.text.to_owned();
-
-                    let assign = parse(lex, atok, astr, pstate);
-
-                    match ntok {
-                        Token::OpAdd => {
-                            return ASTNode::Add(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpSub => {
-                            return ASTNode::Sub(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpMul => {
-                            return ASTNode::Mul(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpDiv => {
-                            return ASTNode::Div(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpEqCheck => {
-                            return ASTNode::EqCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpNeqCheck => {
-                            return ASTNode::NeqCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpGtCheck => {
-                            return ASTNode::GtCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpLtCheck => {
-                            return ASTNode::LtCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpGteCheck => {
-                            return ASTNode::GteCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        Token::OpLteCheck => {
-                            return ASTNode::LteCheck(
-                                Box::new(ASTNode::Variable(sstr)),
-                                Box::new(assign),
-                            )
-                        }
-                        _ => ASTNode::Variable(sstr),
-                    }
-                }
-            }
-        }
-        Token::KwIf => {
-            //our condition is just the next token(s) - they have to be one expression so we can just parse it out
-            let nptok = lex.next().unwrap();
-            let ntok = nptok.token.to_owned();
-            let nstr = nptok.text.to_owned();
-            let condition = parse(lex, ntok, nstr, pstate);
-            //skip a token (LBrace)
-            //lex.next();
-            //everything from here to the RBrace is the if execution body
-            let mut ifbody_ast: Vec<ASTNode> = vec![];
-            loop {
-                let tok_o = lex.next();
-                if tok_o != None {
-                    let ptok = tok_o.unwrap();
-                    let tok = ptok.token.to_owned();
-                    let sstr = ptok.text.to_owned();
-                    if tok == Token::KwRBrace {
-                        break;
-                    }
-
-                    ifbody_ast.push(parse(lex, tok, sstr, pstate));
-                } else {
-                    break;
-                }
-            }
-            //now check for an else
-            let nptok_o = lex.peek();
-            let has_else: bool;
-            if nptok_o == None {
-                has_else = false;
-            } else {
-                let nptok = lex.peek().unwrap();
-                let ntok = nptok.token.to_owned();
-                has_else = ntok == Token::KwElse;
-            }
-            let mut elsebody_ast: Vec<ASTNode> = vec![];
-            if has_else {
-                //we actually need to forward through the token we peeked
-                lex.next();
-                // println!("Else block detected");
-                //do we have a chained if, or do we not have a chained if?
-                let ciptok = lex.next().unwrap();
-                let citok = ciptok.token.to_owned();
-                let cistr = ciptok.text.to_owned();
-                //  println!("Ci [tok/str] {:?} {}",citok,cistr);
-                if citok == Token::KwLBrace {
-                    //tis just a regular ol else
-
-                    loop {
-                        let tok_o = lex.next();
-                        if tok_o != None {
-                            let ptok = tok_o.unwrap();
-                            let tok = ptok.token.to_owned();
-                            let sstr = ptok.text.to_owned();
-                            //     println!("else block -> {:?} / {}",tok,sstr);
-                            if tok == Token::KwRBrace {
-                                break;
-                            }
-                            elsebody_ast.push(parse(lex, tok, sstr, pstate));
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    //  println!("else block -> recursive parse");
-                    //recursively parse whatever's over there
-                    elsebody_ast.push(parse(lex, citok, cistr, pstate));
-                }
-            }
-            let astnode =
-                ASTNode::IfStatement(Box::new(condition), ifbody_ast, has_else, elsebody_ast);
-            return astnode;
-        }
-        Token::KwRParen =>{
-            pstate.encounteredRParen= true;
-            return ASTNode::None;
-        }
-
-        _ => return ASTNode::None,
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ExecutionContext {
     nVars: HashMap<String, f32>,
     sVars: HashMap<String, String>,
@@ -741,6 +684,20 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
             }
             return ASTNode::Number(first_num / second_num);
         }
+        ASTNode::Modulo(p1, p2) => {
+            //actually get ourselves some values
+            let v1 = exec(*p1, executionContext);
+            let v2 = exec(*p2, executionContext);
+            let mut first_num = 0f32;
+            if let ASTNode::Number(n) = v1 {
+                first_num = n;
+            }
+            let mut second_num = 0f32;
+            if let ASTNode::Number(n) = v2 {
+                second_num = n;
+            }
+            return ASTNode::Number(first_num % second_num);
+        }
         ASTNode::GtCheck(p1, p2) => {
             //actually get ourselves some values
             let v1 = exec(*p1, executionContext);
@@ -811,6 +768,7 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
             ASTNode::None
         }
         ASTNode::FunctionCall(id, params) => {
+            // println!("Calling Function {:?} w/ params {:?}",id,params);
             //get the id
             let mut idstr = "".to_string();
             if let ASTNode::Text(vid) = *id {
@@ -827,7 +785,7 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
                     println!("{}", text);
                 } else if let ASTNode::Boolean(b) = val {
                     println!("{}", b);
-                } 
+                }
                 //should either be a number or a string or a bool. those are the only 3 cases we'll handle.
             } else if idstr == "return" {
                 return exec(params[0].clone(), executionContext);
@@ -853,11 +811,24 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
                             f_execcontext.nVars.insert(vid, num);
                         } else if let ASTNode::Text(string) = &params[i] {
                             f_execcontext.sVars.insert(vid, string.clone());
+                        } else if let ASTNode::Variable(vid) = &params[i] {
+                            //you're a tricky one, you know that?
+                            if executionContext.nVars.contains_key(vid) {
+                                f_execcontext
+                                    .nVars
+                                    .insert(vid.clone(), executionContext.nVars[vid]);
+                            } else if executionContext.sVars.contains_key(vid) {
+                                f_execcontext
+                                    .sVars
+                                    .insert(vid.clone(), executionContext.sVars[vid].clone());
+                            }
                         }
                     }
+                    //println!("Function Exec Context: {:?}",f_execcontext);
                     //next, run the function execution - we return the result of the last function call (a rather rust-like convention honestly)
                     let mut ret_val = ASTNode::None;
                     for tree in ftrees {
+                        //  println!("[Fn] ExecTree: {:?}",tree);
                         ret_val = exec(tree, &mut f_execcontext);
                     }
                     return ret_val;
@@ -881,6 +852,7 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
             let condition_tval: bool;
             if let ASTNode::Number(num) = ceval {
                 condition_tval = num != 0.0;
+                //println!("Converting number to boolean: {} -> {}",num,num != 0.0);
             } else if let ASTNode::Boolean(b) = ceval {
                 condition_tval = b
             } else {
@@ -901,17 +873,85 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
             }
             ASTNode::None
         }
+        ASTNode::ConditionalLoop(condition, loopbody) => {
+            loop {
+                //check if we should be looping
+                let ceval = if let ASTNode::Boolean(b) = exec(*condition.clone(), executionContext)
+                {
+                    b
+                } else {
+                    false
+                };
+                if ceval {
+                    //run a loop iteration (ergo, execute the trees!)
+                    for tree in loopbody.clone() {
+                        let val = exec(tree, executionContext);
+                        if val == ASTNode::LoopBreak {
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+            ASTNode::None
+        }
+        ASTNode::IncrementingLoop(a_itername, a_lowerbound, a_upperbound, loopbody) => {
+            //pull out our vars from all these boxes
+            //who says unboxing things in the holidays has to be limited to physical objects? (~ me, 12-27-21)
+            let mut itername = String::new();
+            let mut lowerbound = 0f32;
+            let mut upperbound = 0f32;
+            if let ASTNode::Variable(text) = *a_itername {
+                itername = text;
+            }
+            if let ASTNode::Number(n) = *a_lowerbound {
+                lowerbound = n;
+            }
+            if let ASTNode::Number(n) = *a_upperbound {
+                upperbound = n;
+            }
+            //next construct the basic execution context for the loop
+            let mut lpexec_context = executionContext.clone();
+            lpexec_context.nVars.insert(itername.clone(), lowerbound);
+            //now, iterate
+            for i in lowerbound as i32..upperbound as i32 {
+                *lpexec_context.nVars.get_mut(&itername).unwrap() = i as f32;
+                for tree in loopbody.clone() {
+                    let val = exec(tree, &mut lpexec_context);
+                    if val == ASTNode::LoopBreak {
+                        break;
+                    }
+                }
+            }
+            ASTNode::None
+        }
+
         //the atomic types just get mirrored through
         ASTNode::Number(_) | ASTNode::Text(_) | ASTNode::Boolean(_) => return tree,
         _ => ASTNode::None,
     }
 }
 
+const USE_ARGS: bool = false;
+
 fn main() {
     /* Get Our File */
-    //TODO: replace w/ pulling from args
-    let mut file_contents =
-        fs::read_to_string("C:/workspace/programming/rust/scriptinglang/test.sk").unwrap();
+    let mut file_contents: String;
+    let mut debug: bool = false;
+    if USE_ARGS {
+        let args: Vec<String> = std::env::args().collect();
+        println!("getting file from {}", args.get(1).unwrap());
+        file_contents = fs::read_to_string(args.get(1).unwrap()).unwrap();
+        if args.get(2) != None {
+            debug = true;
+        } else {
+            debug = false;
+        }
+    } else {
+        file_contents =
+            fs::read_to_string("C:/workspace/programming/rust/scriptinglang/nparse.sk").unwrap();
+    }
     file_contents = file_contents.replace("\r", "");
     /* Lex / Parse */
     //basically convert our code to something executable.
@@ -925,7 +965,8 @@ fn main() {
         registeredVarNames: vec![],
         registeredFnNames: vec!["print".to_string(), "return".to_string()],
         encounteredRParen: false,
-        encounteredLBrace:false,
+        encounteredLBrace: false,
+        debug:debug
     };
     let mut tokens: Vec<ParsableToken> = vec![];
     loop {
@@ -939,6 +980,7 @@ fn main() {
             break;
         }
     }
+    // println!("TOKENS:\n{:?}",tokens);
     let mut tok_iter = tokens.iter().peekable();
     loop {
         let tok_o = tok_iter.next();
@@ -947,12 +989,20 @@ fn main() {
             let tok = tok_u.token.to_owned();
             let sstr = tok_u.text.to_owned();
 
-            trees.push(parse(&mut tok_iter, tok, sstr, &mut pstate));
+            trees.push(parse(
+                &mut tok_iter,
+                tok,
+                sstr,
+                Token::Error,
+                "".to_string(),
+                &mut pstate,
+            ));
         } else {
             break;
         }
     }
     println!("*** AST Generation Complete ***");
+    println!("{:?}", trees);
     println!("*** Executing... ***");
 
     //== Execute
@@ -966,8 +1016,12 @@ fn main() {
     };
 
     for tree in trees {
-     //   println!("Executing tree {:?}", &tree);
-        let res = exec(tree, &mut execcontext);
-        //println!("Execution Context: {:?}", &execcontext)
+        if debug {
+            println!("Executing tree {:?}", &tree);
+        }
+        let _res = exec(tree, &mut execcontext);
+        if debug {
+            println!("Execution Context: {:?}", &execcontext)
+        }
     }
 }

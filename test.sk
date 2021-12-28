@@ -57,3 +57,17 @@ if false{
 if "hi"=="hi" {
 	print("text equality works");
 }
+
+print("== Loop Tests ==");
+
+let l = 0;
+
+loop while 5>l {
+	print("conditional loop iter! | "+l);
+	let m = l+1;
+	let l = m;
+}
+
+loop n in 1 to 4 {
+	print("incrementing loop iter! | "+n);
+}
