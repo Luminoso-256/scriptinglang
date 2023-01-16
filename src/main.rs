@@ -835,7 +835,7 @@ fn parse(
 #[derive(Logos, Debug, PartialEq, Clone)]
 enum Token {
     #[error]
-    #[regex(r"[ \t\n\f]+", logos::skip)] //whitespace and other undesirables
+    #[regex(r"([ \t\n\f]+)|(#[^\n]*)", logos::skip)] //whitespace, comments, and other undesirables
     Error,
     //declaration keywords / other important thinggs
     #[token("let")]
@@ -906,7 +906,7 @@ enum Token {
     #[regex("(\"([^\"]+)\")")]
     Text,
     //good ol text & stuffs
-    #[regex("[a-zA-Z]+")]
+    #[regex("[a-zA-Z_][a-zA-Z_0-9]*")]
     Identifier,
     #[regex("[0-9]+")]
     Number,
@@ -1431,24 +1431,6 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
     }
 }
 
-fn preprocess(file:String) -> String{
-    let mut processed_file = "".to_string();
-    //ew windows
-    let cleaned = file.replace("\r", "");
-
-    //the heart of this is pretty simple. we go through line by line, check if theres something we should care abot
-    // if there is, we do stuff. otherwise we dont.
-    let lines = cleaned.split("\n");
-    for line in lines{
-        let should_include_line = !line.starts_with("#");
-        if should_include_line{
-            //we conviently leave the /n out.
-            processed_file += line;
-        }
-    }
-    return processed_file;
-}
-
 const USE_ARGS: bool = true;
 
 fn main() {
@@ -1460,16 +1442,15 @@ fn main() {
         let args: Vec<String> = std::env::args().collect();
         println!("getting file from {}", args.get(1).unwrap());
         file_contents = fs::read_to_string(args.get(1).unwrap()).unwrap();
-        if args.get(2) != None {
+        if args.get(2) != None && args.get(2).unwrap() == "debug" {
             debug = true;
         } else {
             debug = false;
         }
     } else {
         file_contents =
-            fs::read_to_string("C:/workspace/programming/rust/scriptinglang/test.sk").unwrap();
+            fs::read_to_string("test.sk").unwrap();
     }
-    file_contents = preprocess(file_contents);
     /* Lex / Parse */
     //basically convert our code to something executable.
 
