@@ -997,6 +997,44 @@ fn exec(tree: ASTNode, executionContext: &mut ExecutionContext) -> ASTNode {
             //nothing should be relying on a var decl for a value unless your code has serious issues.
             return ASTNode::None;
         }
+        ASTNode::Change(id,valexp) => {
+            //get the id
+            let mut idstr = "".to_string();
+            if let ASTNode::Variable(vid) = *id {
+                idstr = vid;
+            }
+            let val = exec(*valexp, executionContext);
+            if let ASTNode::Text(text) = val {
+                executionContext.sVars.entry(idstr.clone()).and_modify(|o| *o = text.clone()); //todo: there must be a better way!
+            } else if let ASTNode::Number(num) = val {
+                executionContext.nVars.entry(idstr.clone()).and_modify(|o| *o = num);
+            }
+            return ASTNode::None;
+        }
+        ASTNode::AddEq(id,valexp) => {
+            let mut idstr = "".to_string();
+            if let ASTNode::Variable(vid) = *id {
+                idstr = vid;
+            }
+            let val = exec(*valexp, executionContext);
+            if let ASTNode::Text(text) = val {
+                executionContext.sVars.entry(idstr.clone()).and_modify(|o| *o = format!("{}{}",o,text)); //todo: there must be a better way!
+            } else if let ASTNode::Number(num) = val {
+                executionContext.nVars.entry(idstr.clone()).and_modify(|o| *o += num);
+            }
+            return ASTNode::None;
+        }
+         ASTNode::SubEq(id,valexp) => {
+            let mut idstr = "".to_string();
+            if let ASTNode::Variable(vid) = *id {
+                idstr = vid;
+            }
+            let val = exec(*valexp, executionContext);
+            if let ASTNode::Number(num) = val {
+                executionContext.nVars.entry(idstr.clone()).and_modify(|o| *o -= num);
+            }
+            return ASTNode::None;
+        }
         ASTNode::Add(p1, p2) => {
             //actually get ourselves some values
             let v1 = exec(*p1, executionContext);
